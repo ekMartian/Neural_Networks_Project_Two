@@ -1,7 +1,9 @@
 import argparse
 import csv
 from dataclasses import dataclass
+from math import exp, log, sqrt
 from pathlib import Path
+from statistics import fmean
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -71,6 +73,10 @@ def part_e():
     ]
 
 
+def selected_large_model(decay):
+    return Experiment(f"{decay:.12g}", widths=(128, 128), learning_rate=0.03, weight_decay=decay)
+
+
 def evaluate(model, inputs, labels, loss_fn):
     model.eval()
     with torch.no_grad():
@@ -84,9 +90,20 @@ def main():
     parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
     parser.add_argument("output_dir", nargs="?", type=Path)
     parts = {"a": part_a, "b": part_b, "c": part_c, "d": part_d, "e": part_e}
-    parser.add_argument("--part", choices=(*parts, "matrix"), default="a")
+    parser.add_argument("--part", choices=(*parts, "matrix", "search"), default="a")
+    parser.add_argument("--decay", type=float, help="Weight decay for matrix mode (default: 0.01).")
+    parser.add_argument("--epochs", type=int, help="Epoch count for matrix mode (default: 120).")
     args = parser.parse_args()
-    default_output = "validation_results" if args.part == "matrix" else f"part_{args.part}_results"
+    if args.part != "matrix" and (args.decay is not None or args.epochs is not None):
+        parser.error("--decay and --epochs apply to matrix mode")
+    if args.decay is not None and not 0 <= args.decay < float("inf"):
+        parser.error("--decay must be finite and nonnegative")
+    if args.epochs is not None and not 1 <= args.epochs <= 120:
+        parser.error("--epochs must be between 1 and 120")
+    default_output = {
+        "matrix": "validation_results",
+        "search": "decay_search_results",
+    }.get(args.part, f"part_{args.part}_results")
     output_dir = args.output_dir or Path(default_output)
 
     data_dir = Path(__file__).resolve().parent / "supporting_files"
@@ -124,10 +141,16 @@ def main():
 
     training_data = TensorDataset(train_inputs, train_labels)
     if args.part == "matrix":
-        experiment = next(run for run in part_e() if run.weight_decay == 0.01)
-        history, model = train_experiment(experiment, training_data, val_inputs, val_labels)
+        decay = 0.01 if args.decay is None else args.decay
+        experiment = selected_large_model(decay)
+        history, model = train_experiment(
+            experiment, training_data, val_inputs, val_labels, epochs=args.epochs or 120
+        )
         save_confusion_matrix(model, val_inputs, val_labels, output_dir)
         print(f"Epoch {history[-1]['epoch']} validation accuracy {history[-1]['val_accuracy']:.2%}")
+        return
+    if args.part == "search":
+        search_weight_decay(training_data, val_inputs, val_labels, output_dir)
         return
 
     experiments = parts[args.part]()
@@ -163,6 +186,80 @@ def write_csv(path, rows):
         writer = csv.DictWriter(file, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def search_weight_decay(training_data, inputs, labels, output_dir):
+    histories = []
+    trials = []
+
+    def run(decay, lower=None, upper=None, reference=None):
+        history, model = train_experiment(selected_large_model(decay), training_data, inputs, labels)
+        with torch.no_grad():
+            correct = model(inputs).argmax(dim=1) == labels
+        recent = history[-10:]
+        if reference is None:
+            reference = correct
+        trial = {
+            "trial": len(trials),
+            "weight_decay": decay,
+            "interval_lower": lower,
+            "interval_upper": upper,
+            "mean_last_10_val_loss": fmean(row["val_loss"] for row in recent),
+            "mean_last_10_val_accuracy": fmean(row["val_accuracy"] for row in recent),
+            "epoch_120_val_accuracy": history[-1]["val_accuracy"],
+            "epoch_120_val_loss": history[-1]["val_loss"],
+            "epoch_120_correct": correct.sum().item(),
+            "candidate_only_correct": (correct & ~reference).sum().item(),
+            "baseline_only_correct": (reference & ~correct).sum().item(),
+        }
+        trials.append(trial)
+        histories.extend({"trial": trial["trial"], "weight_decay": decay, **row} for row in history)
+        print(
+            f"Trial {trial['trial']} | decay {decay:.8g} | "
+            f"validation accuracy {history[-1]['val_accuracy']:.2%} | "
+            f"mean validation loss {trial['mean_last_10_val_loss']:.5f}",
+            flush=True,
+        )
+        return trial["mean_last_10_val_loss"], correct
+
+    baseline_loss, baseline_correct = run(0.01)
+    lower, upper = log(0.005), log(0.02)
+    ratio = (sqrt(5) - 1) / 2
+    left = upper - ratio * (upper - lower)
+    right = lower + ratio * (upper - lower)
+
+    def probe(point):
+        loss, _ = run(exp(point), exp(lower), exp(upper), baseline_correct)
+        return loss
+
+    left_loss, right_loss = probe(left), probe(right)
+    for _ in range(3):
+        if left_loss <= right_loss:
+            upper, right, right_loss = right, left, left_loss
+            left = upper - ratio * (upper - lower)
+            left_loss = probe(left)
+        else:
+            lower, left, left_loss = left, right, right_loss
+            right = lower + ratio * (upper - lower)
+            right_loss = probe(right)
+
+    reference = trials[0]
+    for trial in trials:
+        trial["meets_promotion_rule"] = (
+            trial["epoch_120_correct"] >= reference["epoch_120_correct"] + 9
+            and trial["mean_last_10_val_accuracy"] > reference["mean_last_10_val_accuracy"]
+            and trial["mean_last_10_val_loss"] <= baseline_loss
+        )
+    winner = max(
+        (trial for trial in trials if trial["meets_promotion_rule"]),
+        key=lambda trial: (trial["epoch_120_correct"], -trial["mean_last_10_val_loss"]),
+        default=reference,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_csv(output_dir / "trials.csv", trials)
+    write_csv(output_dir / "metrics.csv", histories)
+    write_csv(output_dir / "recommendation.csv", [winner])
+    print(f"Recommended decay {winner['weight_decay']:.12g} at epoch 120")
 
 
 def save_confusion_matrix(model, inputs, labels, output_dir):
@@ -258,7 +355,7 @@ def weight_l2_norm(model):
         return weights.norm().item()
 
 
-def train_experiment(experiment, training_data, val_inputs, val_labels):
+def train_experiment(experiment, training_data, val_inputs, val_labels, epochs=120):
     train_inputs, train_labels = training_data.tensors
     seed = 314159
     torch.manual_seed(seed)
@@ -277,7 +374,7 @@ def train_experiment(experiment, training_data, val_inputs, val_labels):
     )
 
     history = []
-    for epoch in range(1, 121):
+    for epoch in range(1, epochs + 1):
         model.train()
         for inputs, labels in train_batches:
             optimizer.zero_grad()

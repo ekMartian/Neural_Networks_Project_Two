@@ -1,0 +1,2 @@
+trial,weight_decay,interval_lower,interval_upper,mean_last_10_val_loss,mean_last_10_val_accuracy,epoch_120_val_accuracy,epoch_120_val_loss,epoch_120_correct,candidate_only_correct,baseline_only_correct,meets_promotion_rule
+0,0.01,,,0.6348066210746766,0.7586666643619537,0.7649999856948853,0.6304921507835388,1377,0,0,False

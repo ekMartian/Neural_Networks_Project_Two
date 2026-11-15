@@ -86,13 +86,32 @@ We used the 1,800 training examples to update the weights. We used the 1,800 val
 
 **What to look at.** As decay increased, the final weights got smaller. At `0.01` the model still fit the training data well and correctly classified 1,377 of 1,800 validation examples. It improved final validation accuracy by 3.94 percentage points over zero decay. At `0.1` the model peaked at 60.67% at epoch 16 and subsequently lost accuracy on both splits. That pattern is consistent with excessive regularization. [Curves](part_e_results/validation_curves.png) · [Final table](part_e_results/final_metrics.csv) · [Metrics](part_e_results/metrics.csv)
 
+## Optional model selection · Golden-section search for weight decay
+
+Part E gave us a strong baseline at decay `0.01`. We tested five new values in the interval `[0.005, 0.02]`, using golden-section search on the logarithm of decay. This spaces probes by ratios rather than absolute increments. We reran the baseline for comparison. Each run used fresh weights, the same seed and batch order, and the same 120-epoch training setup as Part E. Only decay changed.
+
+We used mean validation cross-entropy over epochs 111–120 to decide which side of the interval to probe next. After the first two probes, each step retained one existing probe and trained one new model. For selection at epoch 120, we required nine additional correct examples, higher mean accuracy over those ten epochs, and mean loss at least as low as the baseline. The nine-example cutoff is a practical decision rule, not a statistical significance threshold.
+
+| Trial | Decay | Epoch-120 correct out of 1,800 | Epoch-120 validation accuracy | Mean validation loss, epochs 111–120 |
+|---:|---:|---:|---:|---:|
+| Baseline | 0.01000000 | 1,377 | 76.50% | 0.63481 |
+| 1 | 0.00849056 | 1,366 | 75.89% | 0.64111 |
+| 2 | 0.01177778 | 1,374 | 76.33% | 0.63417 |
+| 3 | 0.01441793 | 1,378 | 76.56% | 0.64454 |
+| 4 | 0.01039384 | 1,373 | 76.28% | 0.63357 |
+| 5 | 0.00962109 | 1,370 | 76.11% | 0.63559 |
+
+Trial 3 got 34 examples right that the baseline missed and missed 33 that the baseline got right. That is a net gain of one example, with higher mean validation loss. Trial 4 had the lowest mean loss among the tested decays and classified four fewer examples correctly at epoch 120. No candidate met the promotion rule, so the recommendation stays at `0.01`. The search provides evidence about this local interval on the supplied validation split. It cannot establish the global optimum or hidden-test accuracy. [Trial order and search intervals](decay_search_results/trials.csv) · [Epoch metrics](decay_search_results/metrics.csv) · [Recommendation](decay_search_results/recommendation.csv)
+
+To reproduce from the project folder, run `OMP_NUM_THREADS=1 MPLBACKEND=Agg /Users/arnav/miniforge3/bin/python pa2.py --part search`.
+
 ## What is left before submission?
 
 1. **Select the complete configuration and epoch.** The leading prescribed result is `24 → 128 → 128 → 6`, ReLU, Kaiming normal, cross-entropy, plain SGD with learning rate `0.03`, weight decay `0.01`, batch size `64`, and 120 epochs. Its 76.50% is validation accuracy. The hidden-test score and grading cluster are unknown.
-2. **Make the six-by-six confusion matrix.** Reproduce the selected run with only the training set used for weight updates. Put true validation classes in the rows and predictions in the columns. The cell counts should sum to 1,800. Use diagonal counts relative to row totals for per-class recall, and inspect the largest off-diagonal counts to see which classes are confused.
+2. **Interpret the six-by-six confusion matrix.** The current `0.01` candidate already has a matrix. Its rows are true validation classes and its columns are predictions. The matrix counts 1,800 predictions, with 1,377 correct. Use diagonal counts relative to row totals for per-class recall, and inspect the largest off-diagonal counts. If you choose a different decay or epoch for this architecture, rerun with `--part matrix --decay VALUE --epochs COUNT`. [Matrix](validation_results/confusion_matrix.png)
 3. **Retrain and export the final model.** Once the choices are fixed, initialize a fresh model and train it on the 3,600 combined rows using the original training-only means and standard deviations. Use `save_model_json.py` and verify the actual export by running `check_model_json.py` from the directory that contains the two CSVs, passing the JSON path. Generate the submission JSON at this stage. The checker scores validation rows that were included in this final training, so use the earlier validation run for your generalization discussion.
 4. **Write and package the submission.** The report needs the requested A–E figures, tables, interpretation, final choice, validation confusion matrix, and AI-use acknowledgment. Submit exactly `BITSID.pdf`, `BITSID.py`, and `BITSID.json` using your full capitalized BITS ID and the Moodle upload.
 
 ## Optional work after the prescribed runs
 
-The handout asks you to select and justify a final model in the allowed search space. It does not list a separate bonus experiment. If time permits after producing a viable checked submission, compare a few nearby choices on validation. Start with the leading Part E model as your baseline. Try a nearby allowed decay or learning rate, or a width such as `128 → 64`. Keep the seed fixed, use only the prescribed final-model options, and judge candidates on the full configuration. The assignment awards five marks for report quality, five by hidden-test performance cluster, and one for submission adherence. The course determines the clusters after evaluation, so there is no published validation target that guarantees full marks.
+The handout asks you to select and justify a final model in the allowed search space. The golden-section search gives extra evidence for that choice. A further experiment, if time permits after preparing a viable checked submission, could test Nielsen initialization on the regularized Large model. It won against Kaiming on the Medium model in Part C. The assignment awards five marks for report quality, five by hidden-test performance cluster, and one for submission adherence. The course determines the clusters after evaluation.
