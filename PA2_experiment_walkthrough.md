@@ -109,8 +109,16 @@ To reproduce from the project folder, run `OMP_NUM_THREADS=1 MPLBACKEND=Agg /Use
 
 1. **Select the complete configuration and epoch.** The leading prescribed result is `24 → 128 → 128 → 6`, ReLU, Kaiming normal, cross-entropy, plain SGD with learning rate `0.03`, weight decay `0.01`, batch size `64`, and 120 epochs. Its 76.50% is validation accuracy. The hidden-test score and grading cluster are unknown.
 2. **Interpret the six-by-six confusion matrix.** The current `0.01` candidate already has a matrix. Its rows are true validation classes and its columns are predictions. The matrix counts 1,800 predictions, with 1,377 correct. Use diagonal counts relative to row totals for per-class recall, and inspect the largest off-diagonal counts. If you choose a different decay or epoch for this architecture, rerun with `--part matrix --decay VALUE --epochs COUNT`. [Matrix](validation_results/confusion_matrix.png)
-3. **Retrain and export the final model.** Once the choices are fixed, initialize a fresh model and train it on the 3,600 combined rows using the original training-only means and standard deviations. Use `save_model_json.py` and verify the actual export by running `check_model_json.py` from the directory that contains the two CSVs, passing the JSON path. Generate the submission JSON at this stage. The checker scores validation rows that were included in this final training, so use the earlier validation run for your generalization discussion.
+3. **Verify the final export and apply the submission filename.** The final mode trained for 120 epochs from fresh weights on the 3,600 combined rows using the original training-only means and standard deviations. The official checker accepted the AI-assisted reference export, [pa2_model.json](pa2_model.json), and a repeat run produced an identical file. The checker's 91.00% score is on rows included in final training. Use the earlier 76.50% validation result for the model-selection and generalization discussion.
 4. **Write and package the submission.** The report needs the requested A–E figures, tables, interpretation, final choice, validation confusion matrix, and AI-use acknowledgment. Submit exactly `BITSID.pdf`, `BITSID.py`, and `BITSID.json` using your full capitalized BITS ID and the Moodle upload.
+
+To reproduce the reference export with a chosen filename, run from the project folder:
+
+```bash
+OMP_NUM_THREADS=1 MPLBACKEND=Agg /Users/arnav/miniforge3/bin/python pa2.py --part final --json BITSID.json
+cd supporting_files
+/Users/arnav/miniforge3/bin/python check_model_json.py ../BITSID.json
+```
 
 ## Optional work after the prescribed runs
 

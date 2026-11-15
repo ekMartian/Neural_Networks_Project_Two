@@ -90,9 +90,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
     parser.add_argument("output_dir", nargs="?", type=Path)
     parts = {"a": part_a, "b": part_b, "c": part_c, "d": part_d, "e": part_e}
-    parser.add_argument("--part", choices=(*parts, "matrix", "search"), default="a")
+    parser.add_argument("--part", choices=(*parts, "matrix", "search", "final"), default="a")
     parser.add_argument("--decay", type=float, help="Weight decay for matrix mode (default: 0.01).")
     parser.add_argument("--epochs", type=int, help="Epoch count for matrix mode (default: 120).")
+    parser.add_argument("--json", type=Path, help="Final JSON path (default: pa2_model.json).")
     args = parser.parse_args()
     if args.part != "matrix" and (args.decay is not None or args.epochs is not None):
         parser.error("--decay and --epochs apply to matrix mode")
@@ -100,6 +101,10 @@ def main():
         parser.error("--decay must be finite and nonnegative")
     if args.epochs is not None and not 1 <= args.epochs <= 120:
         parser.error("--epochs must be between 1 and 120")
+    if args.json is not None and args.part != "final":
+        parser.error("--json applies to final mode")
+    if args.part == "final" and args.output_dir is not None:
+        parser.error("use --json to specify the final export path")
     default_output = {
         "matrix": "validation_results",
         "search": "decay_search_results",
@@ -138,6 +143,14 @@ def main():
     val_inputs = torch.from_numpy(x_val_scaled.astype(np.float32))
     train_labels = torch.from_numpy(y_train.copy())
     val_labels = torch.from_numpy(y_val.copy())
+
+    if args.part == "final":
+        combined = TensorDataset(
+            torch.cat((train_inputs, val_inputs)),
+            torch.cat((train_labels, val_labels)),
+        )
+        export_final_model(combined, args.json or Path("pa2_model.json"))
+        return
 
     training_data = TensorDataset(train_inputs, train_labels)
     if args.part == "matrix":
@@ -355,8 +368,7 @@ def weight_l2_norm(model):
         return weights.norm().item()
 
 
-def train_experiment(experiment, training_data, val_inputs, val_labels, epochs=120):
-    train_inputs, train_labels = training_data.tensors
+def fit_epochs(experiment, training_data, epochs):
     seed = 314159
     torch.manual_seed(seed)
     shuffle_generator = torch.Generator().manual_seed(seed)
@@ -373,7 +385,6 @@ def train_experiment(experiment, training_data, val_inputs, val_labels, epochs=1
         model.parameters(), lr=experiment.learning_rate, momentum=0, weight_decay=experiment.weight_decay
     )
 
-    history = []
     for epoch in range(1, epochs + 1):
         model.train()
         for inputs, labels in train_batches:
@@ -382,7 +393,13 @@ def train_experiment(experiment, training_data, val_inputs, val_labels, epochs=1
             loss = loss_fn(logits, labels)
             loss.backward()
             optimizer.step()
+        yield epoch, model, loss_fn
 
+
+def train_experiment(experiment, training_data, val_inputs, val_labels, epochs=120):
+    train_inputs, train_labels = training_data.tensors
+    history = []
+    for epoch, model, loss_fn in fit_epochs(experiment, training_data, epochs):
         train_loss, train_accuracy = evaluate(model, train_inputs, train_labels, loss_fn)
         val_loss, val_accuracy = evaluate(model, val_inputs, val_labels, loss_fn)
         history.append(
@@ -395,6 +412,20 @@ def train_experiment(experiment, training_data, val_inputs, val_labels, epochs=1
             }
         )
     return history, model
+
+
+def export_final_model(training_data, json_path):
+    from supporting_files.save_model_json import save_model_json
+
+    experiment = selected_large_model(0.01)
+    print(f"Final training from fresh weights on {len(training_data)} examples")
+    for epoch, model, _ in fit_epochs(experiment, training_data, epochs=120):
+        if epoch % 30 == 0:
+            print(f"Completed final epoch {epoch}/120", flush=True)
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    save_model_json(model, hidden_layers=list(experiment.widths), activation="relu", filename=json_path)
+    print(f"Saved final model to {json_path.resolve()}")
 
 
 if __name__ == "__main__":
