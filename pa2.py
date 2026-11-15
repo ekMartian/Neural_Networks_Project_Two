@@ -1,5 +1,6 @@
 import argparse
 import csv
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -8,6 +9,40 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+
+
+@dataclass(frozen=True)
+class Experiment:
+    name: str
+    activation: type[nn.Module] = nn.ReLU
+    widths: tuple[int, ...] = (32,)
+    initialization: str = "kaiming"
+    learning_rate: float = 0.05
+    weight_decay: float = 0.0
+    quadratic: bool = False
+
+
+def part_a():
+    return [
+        Experiment(name, activation=activation, initialization="nielsen")
+        for name, activation in (
+            ("Identity", nn.Identity), ("Sigmoid", nn.Sigmoid),
+            ("Tanh", nn.Tanh), ("ReLU", nn.ReLU),
+        )
+    ]
+
+
+def part_b():
+    return [
+        Experiment("Cross-entropy"),
+        Experiment("Quadratic cost", quadratic=True),
+    ]
+
+
+def quadratic_cost(logits, labels):
+    probabilities = logits.softmax(dim=1)
+    targets = nn.functional.one_hot(labels, num_classes=logits.shape[1])
+    return 0.5 * (probabilities - targets).square().sum(dim=1).mean()
 
 
 def evaluate(model, inputs, labels, loss_fn):
@@ -20,9 +55,11 @@ def evaluate(model, inputs, labels, loss_fn):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compare the four Part A activations.")
-    parser.add_argument("output_dir", nargs="?", type=Path, default=Path("part_a_results"))
-    output_dir = parser.parse_args().output_dir
+    parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
+    parser.add_argument("output_dir", nargs="?", type=Path)
+    parser.add_argument("--part", choices=("a", "b"), default="a")
+    args = parser.parse_args()
+    output_dir = args.output_dir or Path(f"part_{args.part}_results")
 
     data_dir = Path(__file__).resolve().parent / "supporting_files"
     training = pd.read_csv(data_dir / "training.csv")
@@ -58,40 +95,81 @@ def main():
     val_labels = torch.from_numpy(y_val.copy())
 
     training_data = TensorDataset(train_inputs, train_labels)
-    activations = {
-        "Identity": nn.Identity,
-        "Sigmoid": nn.Sigmoid,
-        "Tanh": nn.Tanh,
-        "ReLU": nn.ReLU,
-    }
-    results = []
-    figure, (accuracy_axis, loss_axis) = plt.subplots(2, 1, sharex=True, layout="constrained")
-    for name, activation in activations.items():
-        history = train_activation(activation, training_data, val_inputs, val_labels)
-        results.extend({"activation": name, **row} for row in history)
-        epochs = [row["epoch"] for row in history]
-        accuracy_axis.plot(epochs, [100 * row["val_accuracy"] for row in history], label=name)
-        loss_axis.plot(epochs, [row["val_loss"] for row in history], label=name)
-        print(f"{name:8s} | epoch 120 validation accuracy {history[-1]['val_accuracy']:.2%}")
-
-    accuracy_axis.set_ylabel("Validation accuracy (%)")
-    loss_axis.set_ylabel("Validation cross-entropy")
-    loss_axis.set_xlabel("Epoch")
-    for axis in (accuracy_axis, loss_axis):
-        axis.legend()
-        axis.grid(alpha=0.25)
+    experiments = {"a": part_a, "b": part_b}[args.part]()
+    histories = {}
+    for experiment in experiments:
+        history = train_experiment(experiment, training_data, val_inputs, val_labels)
+        histories[experiment.name] = history
+        best = max(history, key=lambda row: row["val_accuracy"])
+        print(
+            f"{experiment.name} | final validation accuracy {history[-1]['val_accuracy']:.2%}"
+            f" | peak {best['val_accuracy']:.2%} at epoch {best['epoch']}",
+            flush=True,
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    with (output_dir / "metrics.csv").open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=list(results[0]))
+    write_csv(
+        output_dir / "metrics.csv",
+        [{"configuration": name, **row} for name, history in histories.items() for row in history],
+    )
+    plot_results(args.part, histories, output_dir)
+    print(f"Saved Part {args.part.upper()} results in {output_dir.resolve()}")
+
+
+def write_csv(path, rows):
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
-        writer.writerows(results)
-    figure.savefig(output_dir / "validation_curves.png", dpi=180)
+        writer.writerows(rows)
+
+
+def plot_metrics(path, panels):
+    figure, axes = plt.subplots(len(panels), 1, sharex=True, squeeze=False, layout="constrained")
+    for axis, (ylabel, series) in zip(axes[:, 0], panels):
+        for name, history, metric in series:
+            values = [row[metric] for row in history]
+            if metric.endswith("accuracy"):
+                values = [100 * value for value in values]
+            axis.plot([row["epoch"] for row in history], values, label=name)
+        axis.set_ylabel(ylabel)
+        axis.legend()
+        axis.grid(alpha=0.25)
+    axes[-1, 0].set_xlabel("Epoch")
+    figure.savefig(path, dpi=180)
     plt.close(figure)
-    print(f"Saved Part A results in {output_dir.resolve()}")
 
 
-def train_activation(activation, training_data, val_inputs, val_labels):
+def plot_results(part, histories, output_dir):
+    accuracy = ("Validation accuracy (%)", [(name, rows, "val_accuracy") for name, rows in histories.items()])
+    loss = ("Validation cross-entropy", [(name, rows, "val_loss") for name, rows in histories.items()])
+    if part == "b":
+        plot_metrics(output_dir / "validation_accuracy.png", [accuracy])
+        for name, filename in (
+            ("Cross-entropy", "cross_entropy_loss.png"), ("Quadratic cost", "quadratic_loss.png")
+        ):
+            plot_metrics(output_dir / filename, [(f"Validation {name.lower()}", [(name, histories[name], "val_loss")])])
+    else:
+        plot_metrics(output_dir / "validation_curves.png", [accuracy, loss])
+
+
+def build_model(experiment):
+    sizes = (24, *experiment.widths, 6)
+    modules = []
+    for layer_number, (inputs, outputs) in enumerate(zip(sizes, sizes[1:])):
+        modules.append(nn.Linear(inputs, outputs))
+        if layer_number < len(experiment.widths):
+            modules.append(experiment.activation())
+
+    for layer in modules[::2]:
+        if experiment.initialization == "kaiming":
+            nn.init.kaiming_normal_(layer.weight, mode="fan_in", nonlinearity="relu")
+        else:
+            nn.init.normal_(layer.weight, mean=0.0, std=layer.in_features ** -0.5)
+        nn.init.zeros_(layer.bias)
+    return nn.Sequential(*modules)
+
+
+def train_experiment(experiment, training_data, val_inputs, val_labels):
     train_inputs, train_labels = training_data.tensors
     seed = 314159
     torch.manual_seed(seed)
@@ -103,13 +181,11 @@ def train_activation(activation, training_data, val_inputs, val_labels):
         generator=shuffle_generator,
     )
 
-    model = nn.Sequential(nn.Linear(24, 32), activation(), nn.Linear(32, 6))
-    for layer in (model[0], model[2]):
-        nn.init.normal_(layer.weight, mean=0.0, std=layer.in_features ** -0.5)
-        nn.init.zeros_(layer.bias)
-
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.05, momentum=0, weight_decay=0)
+    model = build_model(experiment)
+    loss_fn = quadratic_cost if experiment.quadratic else nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(
+        model.parameters(), lr=experiment.learning_rate, momentum=0, weight_decay=experiment.weight_decay
+    )
 
     history = []
     for epoch in range(1, 121):
