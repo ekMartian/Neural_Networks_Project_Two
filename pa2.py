@@ -55,6 +55,15 @@ def part_c():
     ]
 
 
+def part_d():
+    return [
+        Experiment(name, widths=widths, learning_rate=0.03)
+        for name, widths in (
+            ("Tiny", (8,)), ("Small", (32,)), ("Medium", (64, 32)), ("Large", (128, 128)),
+        )
+    ]
+
+
 def evaluate(model, inputs, labels, loss_fn):
     model.eval()
     with torch.no_grad():
@@ -67,7 +76,7 @@ def evaluate(model, inputs, labels, loss_fn):
 def main():
     parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
     parser.add_argument("output_dir", nargs="?", type=Path)
-    parts = {"a": part_a, "b": part_b, "c": part_c}
+    parts = {"a": part_a, "b": part_b, "c": part_c, "d": part_d}
     parser.add_argument("--part", choices=parts, default="a")
     args = parser.parse_args()
     output_dir = args.output_dir or Path(f"part_{args.part}_results")
@@ -123,6 +132,11 @@ def main():
         output_dir / "metrics.csv",
         [{"configuration": name, **row} for name, history in histories.items() for row in history],
     )
+    if args.part == "d":
+        write_csv(
+            output_dir / "final_metrics.csv",
+            [{"configuration": name, **history[-1]} for name, history in histories.items()],
+        )
     plot_results(args.part, histories, output_dir)
     print(f"Saved Part {args.part.upper()} results in {output_dir.resolve()}")
 
@@ -159,6 +173,16 @@ def plot_results(part, histories, output_dir):
             ("Cross-entropy", "cross_entropy_loss.png"), ("Quadratic cost", "quadratic_loss.png")
         ):
             plot_metrics(output_dir / filename, [(f"Validation {name.lower()}", [(name, histories[name], "val_loss")])])
+    elif part == "d":
+        plot_metrics(output_dir / "validation_accuracy.png", [accuracy])
+        large = histories["Large"]
+        plot_metrics(
+            output_dir / "large_training_and_validation.png",
+            [
+                ("Accuracy (%)", [("Training", large, "train_accuracy"), ("Validation", large, "val_accuracy")]),
+                ("Cross-entropy", [("Training", large, "train_loss"), ("Validation", large, "val_loss")]),
+            ],
+        )
     else:
         plot_metrics(output_dir / "validation_curves.png", [accuracy, loss])
 
