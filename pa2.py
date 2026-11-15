@@ -84,9 +84,10 @@ def main():
     parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
     parser.add_argument("output_dir", nargs="?", type=Path)
     parts = {"a": part_a, "b": part_b, "c": part_c, "d": part_d, "e": part_e}
-    parser.add_argument("--part", choices=parts, default="a")
+    parser.add_argument("--part", choices=(*parts, "matrix"), default="a")
     args = parser.parse_args()
-    output_dir = args.output_dir or Path(f"part_{args.part}_results")
+    default_output = "validation_results" if args.part == "matrix" else f"part_{args.part}_results"
+    output_dir = args.output_dir or Path(default_output)
 
     data_dir = Path(__file__).resolve().parent / "supporting_files"
     training = pd.read_csv(data_dir / "training.csv")
@@ -122,6 +123,13 @@ def main():
     val_labels = torch.from_numpy(y_val.copy())
 
     training_data = TensorDataset(train_inputs, train_labels)
+    if args.part == "matrix":
+        experiment = next(run for run in part_e() if run.weight_decay == 0.01)
+        history, model = train_experiment(experiment, training_data, val_inputs, val_labels)
+        save_confusion_matrix(model, val_inputs, val_labels, output_dir)
+        print(f"Epoch {history[-1]['epoch']} validation accuracy {history[-1]['val_accuracy']:.2%}")
+        return
+
     experiments = parts[args.part]()
     histories = {}
     final_metrics = []
@@ -155,6 +163,34 @@ def write_csv(path, rows):
         writer = csv.DictWriter(file, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def save_confusion_matrix(model, inputs, labels, output_dir):
+    from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+
+    model.eval()
+    with torch.no_grad():
+        predictions = model(inputs).argmax(dim=1)
+
+    classes = list(range(6))
+    counts = confusion_matrix(labels.numpy(), predictions.numpy(), labels=classes)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    write_csv(
+        output_dir / "confusion_matrix.csv",
+        [
+            {"true_class": label, **{f"predicted_{index}": count for index, count in enumerate(row)}}
+            for label, row in zip(classes, counts)
+        ],
+    )
+
+    figure, axis = plt.subplots(figsize=(6, 5), layout="constrained")
+    ConfusionMatrixDisplay(counts, display_labels=classes).plot(
+        ax=axis, cmap="Blues", values_format="d"
+    )
+    axis.set_title("Validation confusion matrix")
+    figure.savefig(output_dir / "confusion_matrix.png", dpi=180)
+    plt.close(figure)
+    print(f"Saved validation confusion matrix in {output_dir.resolve()}")
 
 
 def plot_metrics(path, panels):
