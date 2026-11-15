@@ -45,6 +45,16 @@ def quadratic_cost(logits, labels):
     return 0.5 * (probabilities - targets).square().sum(dim=1).mean()
 
 
+def part_c():
+    return [
+        Experiment(name, widths=(64, 32), initialization=method, learning_rate=0.03)
+        for name, method in (
+            ("Small normal", "small"), ("Large normal", "large"),
+            ("Nielsen", "nielsen"), ("Kaiming", "kaiming"),
+        )
+    ]
+
+
 def evaluate(model, inputs, labels, loss_fn):
     model.eval()
     with torch.no_grad():
@@ -57,7 +67,8 @@ def evaluate(model, inputs, labels, loss_fn):
 def main():
     parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
     parser.add_argument("output_dir", nargs="?", type=Path)
-    parser.add_argument("--part", choices=("a", "b"), default="a")
+    parts = {"a": part_a, "b": part_b, "c": part_c}
+    parser.add_argument("--part", choices=parts, default="a")
     args = parser.parse_args()
     output_dir = args.output_dir or Path(f"part_{args.part}_results")
 
@@ -95,7 +106,7 @@ def main():
     val_labels = torch.from_numpy(y_val.copy())
 
     training_data = TensorDataset(train_inputs, train_labels)
-    experiments = {"a": part_a, "b": part_b}[args.part]()
+    experiments = parts[args.part]()
     histories = {}
     for experiment in experiments:
         history = train_experiment(experiment, training_data, val_inputs, val_labels)
@@ -163,8 +174,11 @@ def build_model(experiment):
     for layer in modules[::2]:
         if experiment.initialization == "kaiming":
             nn.init.kaiming_normal_(layer.weight, mode="fan_in", nonlinearity="relu")
-        else:
+        elif experiment.initialization == "nielsen":
             nn.init.normal_(layer.weight, mean=0.0, std=layer.in_features ** -0.5)
+        else:
+            std = {"small": 0.01, "large": 1.0}[experiment.initialization]
+            nn.init.normal_(layer.weight, mean=0.0, std=std)
         nn.init.zeros_(layer.bias)
     return nn.Sequential(*modules)
 
