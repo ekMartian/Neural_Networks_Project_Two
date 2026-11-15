@@ -64,6 +64,13 @@ def part_d():
     ]
 
 
+def part_e():
+    return [
+        Experiment(f"{decay:g}", widths=(128, 128), learning_rate=0.03, weight_decay=decay)
+        for decay in (0, 0.001, 0.01, 0.03, 0.1)
+    ]
+
+
 def evaluate(model, inputs, labels, loss_fn):
     model.eval()
     with torch.no_grad():
@@ -76,7 +83,7 @@ def evaluate(model, inputs, labels, loss_fn):
 def main():
     parser = argparse.ArgumentParser(description="Run controlled PA2 experiments.")
     parser.add_argument("output_dir", nargs="?", type=Path)
-    parts = {"a": part_a, "b": part_b, "c": part_c, "d": part_d}
+    parts = {"a": part_a, "b": part_b, "c": part_c, "d": part_d, "e": part_e}
     parser.add_argument("--part", choices=parts, default="a")
     args = parser.parse_args()
     output_dir = args.output_dir or Path(f"part_{args.part}_results")
@@ -117,9 +124,14 @@ def main():
     training_data = TensorDataset(train_inputs, train_labels)
     experiments = parts[args.part]()
     histories = {}
+    final_metrics = []
     for experiment in experiments:
-        history = train_experiment(experiment, training_data, val_inputs, val_labels)
+        history, model = train_experiment(experiment, training_data, val_inputs, val_labels)
         histories[experiment.name] = history
+        final_row = {"configuration": experiment.name, **history[-1]}
+        if args.part == "e":
+            final_row["weight_l2_norm"] = weight_l2_norm(model)
+        final_metrics.append(final_row)
         best = max(history, key=lambda row: row["val_accuracy"])
         print(
             f"{experiment.name} | final validation accuracy {history[-1]['val_accuracy']:.2%}"
@@ -132,11 +144,8 @@ def main():
         output_dir / "metrics.csv",
         [{"configuration": name, **row} for name, history in histories.items() for row in history],
     )
-    if args.part == "d":
-        write_csv(
-            output_dir / "final_metrics.csv",
-            [{"configuration": name, **history[-1]} for name, history in histories.items()],
-        )
+    if args.part in ("d", "e"):
+        write_csv(output_dir / "final_metrics.csv", final_metrics)
     plot_results(args.part, histories, output_dir)
     print(f"Saved Part {args.part.upper()} results in {output_dir.resolve()}")
 
@@ -207,6 +216,12 @@ def build_model(experiment):
     return nn.Sequential(*modules)
 
 
+def weight_l2_norm(model):
+    with torch.no_grad():
+        weights = torch.cat([layer.weight.flatten() for layer in model if isinstance(layer, nn.Linear)])
+        return weights.norm().item()
+
+
 def train_experiment(experiment, training_data, val_inputs, val_labels):
     train_inputs, train_labels = training_data.tensors
     seed = 314159
@@ -246,7 +261,7 @@ def train_experiment(experiment, training_data, val_inputs, val_labels):
                 "val_accuracy": val_accuracy,
             }
         )
-    return history
+    return history, model
 
 
 if __name__ == "__main__":
